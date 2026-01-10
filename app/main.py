@@ -88,10 +88,11 @@ async def upload_document(file: UploadFile = File(...)):
     
     # Validate file extension
     suffix = Path(file.filename).suffix.lower()
-    if suffix not in ['.pdf', '.txt', '.text', '.md', '.markdown']:
+    supported_extensions = ['.pdf', '.txt', '.text', '.md', '.markdown']
+    if suffix not in supported_extensions:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Supported: .pdf, .txt, .md"
+            detail=f"Unsupported file type. Supported: {', '.join(supported_extensions)}"
         )
     
     try:

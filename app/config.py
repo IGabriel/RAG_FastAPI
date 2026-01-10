@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # Retrieval
     DEFAULT_TOP_K: int = 5
     
+    # LLM generation
+    LLM_MAX_INPUT_LENGTH: int = 2000
+    LLM_MAX_NEW_TOKENS: int = 512
+    LLM_TEMPERATURE: float = 0.7
+    LLM_TOP_P: float = 0.9
+    
     # External OCR service (optional)
     OCR_SERVICE_URL: str = ""
     

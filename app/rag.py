@@ -146,16 +146,16 @@ Answer:"""
         model, tokenizer = get_llm_model()
         
         def _generate():
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2000)
+            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=settings.LLM_MAX_INPUT_LENGTH)
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=512,
-                    temperature=0.7,
+                    max_new_tokens=settings.LLM_MAX_NEW_TOKENS,
+                    temperature=settings.LLM_TEMPERATURE,
                     do_sample=True,
-                    top_p=0.9,
+                    top_p=settings.LLM_TOP_P,
                     pad_token_id=tokenizer.eos_token_id
                 )
             

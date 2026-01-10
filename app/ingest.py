@@ -164,9 +164,17 @@ def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[s
             
             if current_length + word_length > chunk_size and current_chunk:
                 chunks.append(' '.join(current_chunk))
-                # Keep overlap words
-                overlap_words = int(len(current_chunk) * overlap / chunk_size)
-                current_chunk = current_chunk[-overlap_words:] if overlap_words > 0 else []
+                # Keep overlap words (calculate based on actual character length)
+                overlap_length = 0
+                overlap_words = []
+                for w in reversed(current_chunk):
+                    word_len = len(w) + 1
+                    if overlap_length + word_len <= overlap:
+                        overlap_words.insert(0, w)
+                        overlap_length += word_len
+                    else:
+                        break
+                current_chunk = overlap_words
                 current_length = sum(len(w) + 1 for w in current_chunk)
             
             current_chunk.append(word)
