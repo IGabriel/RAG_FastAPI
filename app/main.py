@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.config import settings
 from app.db import initialize_database, close_database, get_db_connection
@@ -99,11 +100,11 @@ async def upload_document(file: UploadFile = File(...)):
         # Create document record in database
         async with get_db_connection() as conn:
             result = await conn.execute(
-                """
+                text("""
                 INSERT INTO documents (filename, file_path, status)
                 VALUES (:filename, :filepath, 'pending')
                 RETURNING id
-                """,
+                """),
                 {"filename": file.filename, "filepath": ""}
             )
             row = result.fetchone()
@@ -122,11 +123,11 @@ async def upload_document(file: UploadFile = File(...)):
         # Update file path in database
         async with get_db_connection() as conn:
             await conn.execute(
-                """
+                text("""
                 UPDATE documents 
                 SET file_path = :filepath
                 WHERE id = :doc_id
-                """,
+                """),
                 {"filepath": str(file_path), "doc_id": document_id}
             )
         
@@ -154,12 +155,12 @@ async def list_documents(
     
     async with get_db_connection() as conn:
         # Get total count
-        result = await conn.execute("SELECT COUNT(*) FROM documents")
+        result = await conn.execute(text("SELECT COUNT(*) FROM documents"))
         total = result.fetchone()[0]
         
         # Get documents with chunk counts
         result = await conn.execute(
-            """
+            text("""
             SELECT 
                 d.id,
                 d.filename,
@@ -172,7 +173,7 @@ async def list_documents(
             GROUP BY d.id
             ORDER BY d.created_at DESC
             LIMIT :limit OFFSET :offset
-            """,
+            """),
             {"limit": per_page, "offset": offset}
         )
         rows = result.fetchall()
@@ -202,7 +203,7 @@ async def get_document(doc_id: int):
     """Get document details."""
     async with get_db_connection() as conn:
         result = await conn.execute(
-            """
+            text("""
             SELECT 
                 d.id,
                 d.filename,
@@ -214,7 +215,7 @@ async def get_document(doc_id: int):
             LEFT JOIN chunks c ON d.id = c.document_id
             WHERE d.id = :doc_id
             GROUP BY d.id
-            """,
+            """),
             {"doc_id": doc_id}
         )
         row = result.fetchone()
@@ -238,7 +239,7 @@ async def delete_document(doc_id: int):
     async with get_db_connection() as conn:
         # Get file path
         result = await conn.execute(
-            "SELECT file_path FROM documents WHERE id = :doc_id",
+            text("SELECT file_path FROM documents WHERE id = :doc_id"),
             {"doc_id": doc_id}
         )
         row = result.fetchone()
@@ -251,7 +252,7 @@ async def delete_document(doc_id: int):
         
         # Delete from database (cascades to chunks)
         await conn.execute(
-            "DELETE FROM documents WHERE id = :doc_id",
+            text("DELETE FROM documents WHERE id = :doc_id"),
             {"doc_id": doc_id}
         )
     
@@ -270,7 +271,7 @@ async def reindex_document(doc_id: int):
     """Reindex an existing document."""
     async with get_db_connection() as conn:
         result = await conn.execute(
-            "SELECT file_path FROM documents WHERE id = :doc_id",
+            text("SELECT file_path FROM documents WHERE id = :doc_id"),
             {"doc_id": doc_id}
         )
         row = result.fetchone()

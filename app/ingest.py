@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 import aiohttp
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import text
 from pypdf import PdfReader
 import numpy as np
 
@@ -227,11 +228,11 @@ async def index_document(document_id: int, file_path: Path):
             # Update status to processing
             async with get_db_connection() as conn:
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'processing', updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id}
                 )
             
@@ -254,7 +255,7 @@ async def index_document(document_id: int, file_path: Path):
             async with get_db_connection() as conn:
                 # Delete existing chunks (for reindexing)
                 await conn.execute(
-                    "DELETE FROM chunks WHERE document_id = :doc_id",
+                    text("DELETE FROM chunks WHERE document_id = :doc_id"),
                     {"doc_id": document_id}
                 )
                 
@@ -262,10 +263,10 @@ async def index_document(document_id: int, file_path: Path):
                 for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                     embedding_list = embedding.tolist()
                     await conn.execute(
-                        """
+                        text("""
                         INSERT INTO chunks (document_id, chunk_index, content, embedding)
                         VALUES (:doc_id, :idx, :content, :embedding)
-                        """,
+                        """),
                         {
                             "doc_id": document_id,
                             "idx": idx,
@@ -276,11 +277,11 @@ async def index_document(document_id: int, file_path: Path):
                 
                 # Update document status
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'completed', error_message = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id}
                 )
         
@@ -288,11 +289,11 @@ async def index_document(document_id: int, file_path: Path):
             # Update status to failed
             async with get_db_connection() as conn:
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'failed', error_message = :error, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id, "error": str(e)}
                 )
             raise

@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+from sqlalchemy import text
 
 from app.config import settings
 from app.db import get_db_connection
@@ -60,7 +61,7 @@ async def retrieve_chunks(
         if document_id is not None:
             # Filter by document_id
             result = await conn.execute(
-                """
+                text("""
                 SELECT 
                     c.id as chunk_id,
                     c.document_id,
@@ -73,7 +74,7 @@ async def retrieve_chunks(
                 WHERE c.document_id = :doc_id
                 ORDER BY distance
                 LIMIT :limit
-                """,
+                """),
                 {
                     "query_embedding": str(query_embedding),
                     "doc_id": document_id,
@@ -83,7 +84,7 @@ async def retrieve_chunks(
         else:
             # Search across all documents
             result = await conn.execute(
-                """
+                text("""
                 SELECT 
                     c.id as chunk_id,
                     c.document_id,
@@ -95,7 +96,7 @@ async def retrieve_chunks(
                 JOIN documents d ON c.document_id = d.id
                 ORDER BY distance
                 LIMIT :limit
-                """,
+                """),
                 {
                     "query_embedding": str(query_embedding),
                     "limit": top_k
