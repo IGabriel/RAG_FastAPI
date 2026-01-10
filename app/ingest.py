@@ -25,7 +25,13 @@ def get_embedding_model() -> SentenceTransformer:
         # If the host cannot access huggingface.co, run in offline/local mode.
         # Libraries also respect env vars like HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE,
         # but SentenceTransformer benefits from an explicit local_files_only flag.
-        local_only = os.getenv("HF_HUB_OFFLINE") == "1" or os.getenv("TRANSFORMERS_OFFLINE") == "1"
+        model_ref = settings.EMBEDDING_MODEL
+        model_path_exists = Path(model_ref).exists()
+        local_only = (
+            model_path_exists
+            or os.getenv("HF_HUB_OFFLINE") == "1"
+            or os.getenv("TRANSFORMERS_OFFLINE") == "1"
+        )
         cache_folder = (
             os.getenv("SENTENCE_TRANSFORMERS_HOME")
             or os.getenv("HF_HOME")
@@ -33,7 +39,7 @@ def get_embedding_model() -> SentenceTransformer:
         )
 
         _embedding_model = SentenceTransformer(
-            settings.EMBEDDING_MODEL,
+            model_ref,
             cache_folder=cache_folder,
             local_files_only=local_only,
         )

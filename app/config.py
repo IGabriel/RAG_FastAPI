@@ -1,7 +1,7 @@
 """Configuration management for RAG service."""
-import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -40,9 +40,7 @@ class Settings(BaseSettings):
     # External OCR service (optional)
     OCR_SERVICE_URL: str = ""
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()
