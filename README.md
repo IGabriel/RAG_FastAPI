@@ -33,6 +33,37 @@ A production-ready Async RAG (Retrieval-Augmented Generation) service built with
 - At least 4GB RAM (for models)
 - 10GB disk space (for models and storage)
 
+### System Packages (Ubuntu/Debian)
+
+Install the baseline system dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-pip \
+  git \
+  curl \
+  ca-certificates
+```
+
+If `pip install -r requirements.txt` needs to build native wheels (varies by platform/Python), install build tools too:
+
+```bash
+sudo apt-get install -y build-essential python3-dev
+```
+
+Docker (choose one):
+
+```bash
+# Option A (Ubuntu packages)
+sudo apt-get install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER
+
+# Option B (official Docker Engine) - see: https://docs.docker.com/engine/install/
+```
+
 ## Quick Start
 
 ### 1. Clone the Repository
@@ -45,7 +76,7 @@ cd RAG_FastAPI
 ### 2. Start PostgreSQL with pgvector
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This starts a PostgreSQL 16 container with pgvector extension.
@@ -73,6 +104,42 @@ huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir models/Qwen2.5-0
 # Option 3: from modelscope
 # modelscope download --model Qwen/Qwen2.5-0.5B-Instruct --local_dir models/Qwen2.5-0.5B-Instruct
 ```
+
+If your host cannot access Hugging Face, prefer the ModelScope option above, and keep `LLM_MODEL_PATH` pointing to the local folder:
+
+```bash
+LLM_MODEL_PATH=./models/Qwen2.5-0.5B-Instruct
+```
+
+### 4.1 Download the Embedding Model (Recommended)
+
+This service uses `sentence-transformers` and will try to download the embedding model on first startup. If your server cannot access Hugging Face (common on some cloud hosts), download it to a local folder and point `EMBEDDING_MODEL` to that path.
+
+```bash
+mkdir -p models
+
+# If you are in mainland China, this often helps:
+export HF_ENDPOINT=https://hf-mirror.com
+
+# Download the embedding model to a local directory
+huggingface-cli download BAAI/bge-small-zh-v1.5 --local-dir models/bge-small-zh-v1.5
+
+# Option 2: ModelScope (often works better on mainland China servers)
+# modelscope download --model BAAI/bge-small-zh-v1.5 --local_dir models/bge-small-zh-v1.5
+```
+
+Then set in `.env`:
+
+```bash
+EMBEDDING_MODEL=./models/bge-small-zh-v1.5
+
+# If the server cannot access huggingface.co at runtime, force offline mode:
+HF_HUB_OFFLINE=1
+# (Optional)
+TRANSFORMERS_OFFLINE=1
+```
+
+If you still cannot download from the server, do the download on a machine with internet access, then copy `models/bge-small-zh-v1.5/` to the server.
 
 ### 5. Configure Environment Variables
 

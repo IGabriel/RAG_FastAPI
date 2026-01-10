@@ -1,5 +1,6 @@
 """Document ingestion, chunking, and embedding."""
 import asyncio
+import os
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -21,7 +22,21 @@ def get_embedding_model() -> SentenceTransformer:
     """Get or load the embedding model."""
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        # If the host cannot access huggingface.co, run in offline/local mode.
+        # Libraries also respect env vars like HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE,
+        # but SentenceTransformer benefits from an explicit local_files_only flag.
+        local_only = os.getenv("HF_HUB_OFFLINE") == "1" or os.getenv("TRANSFORMERS_OFFLINE") == "1"
+        cache_folder = (
+            os.getenv("SENTENCE_TRANSFORMERS_HOME")
+            or os.getenv("HF_HOME")
+            or os.getenv("TRANSFORMERS_CACHE")
+        )
+
+        _embedding_model = SentenceTransformer(
+            settings.EMBEDDING_MODEL,
+            cache_folder=cache_folder,
+            local_files_only=local_only,
+        )
     return _embedding_model
 
 
