@@ -69,6 +69,9 @@ huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir models/Qwen2.5-0
 
 # Option 2: Manual download from https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
 # Download all files and place them in models/Qwen2.5-0.5B-Instruct/
+
+# Option 3: from modelscope
+# modelscope download --model Qwen/Qwen2.5-0.5B-Instruct --local_dir models/Qwen2.5-0.5B-Instruct
 ```
 
 ### 5. Configure Environment Variables
