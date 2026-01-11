@@ -337,6 +337,42 @@ GET /documents?page=1&per_page=10
 - `completed` - Successfully indexed and ready for queries
 - `failed` - Processing failed (check logs)
 
+## OCR (Scanned PDFs)
+
+If a PDF has no selectable text (image-only/scanned PDF), `pypdf` may extract an empty string and indexing will fail unless OCR is enabled.
+
+This repo includes a minimal OCR service (FastAPI + Tesseract) that implements the expected `OCR_SERVICE_URL` contract.
+
+- Start OCR service:
+  - `docker compose up -d ocr`
+- Set `.env`:
+  - `OCR_SERVICE_URL=http://127.0.0.1:9001/ocr`
+- Reindex a document:
+  - `curl -sS -X POST http://127.0.0.1:8000/documents/<DOC_ID>/reindex`
+
+Notes:
+- OCR quality depends on PDF quality and language pack. Default is `chi_sim+eng`.
+- You can change OCR settings via docker-compose environment: `OCR_LANG`, `OCR_DPI`, `OCR_MAX_PAGES`.
+
+### If `docker compose build ocr` fails (apt timeouts)
+
+On some servers (especially with restricted outbound network), the OCR image build may fail while running `apt-get`.
+In that case, use a closer Debian mirror for the OCR build:
+
+```bash
+export APT_MIRROR_URL=http://mirrors.aliyun.com/debian
+export APT_SECURITY_URL=http://mirrors.aliyun.com/debian-security
+docker compose build ocr
+docker compose up -d ocr
+```
+Common symptoms include:
+
+- `Could not connect to debian.map.fastlydns.net:80 ... connection timed out`
+- `E: Unable to locate package tesseract-ocr` (usually because `apt-get update` could not fetch indexes)
+
+If you prefer not to export variables each time, you can also put these in the local `.env` file in the repo root
+(Docker Compose reads it automatically) and then run `docker compose build ocr`.
+
 #### Get Document Details
 ```http
 GET /documents/{doc_id}

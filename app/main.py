@@ -3,7 +3,7 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -71,7 +71,7 @@ async def root():
 
 
 @app.post("/documents", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Upload a document for processing."""
     # Check file size
     file.file.seek(0, 2)  # Seek to end
@@ -132,7 +132,7 @@ async def upload_document(file: UploadFile = File(...)):
             )
         
         # Enqueue indexing
-        await enqueue_indexing(document_id, file_path)
+        await enqueue_indexing(document_id, file_path, background_tasks=background_tasks)
         
         return DocumentUploadResponse(
             document_id=document_id,
@@ -267,7 +267,7 @@ async def delete_document(doc_id: int):
 
 
 @app.post("/documents/{doc_id}/reindex", response_model=ReindexResponse)
-async def reindex_document(doc_id: int):
+async def reindex_document(doc_id: int, background_tasks: BackgroundTasks):
     """Reindex an existing document."""
     async with get_db_connection() as conn:
         result = await conn.execute(
@@ -285,7 +285,7 @@ async def reindex_document(doc_id: int):
             raise HTTPException(status_code=404, detail="Document file not found on disk")
     
     # Enqueue reindexing
-    await enqueue_indexing(doc_id, file_path)
+    await enqueue_indexing(doc_id, file_path, background_tasks=background_tasks)
     
     return ReindexResponse(
         document_id=doc_id,

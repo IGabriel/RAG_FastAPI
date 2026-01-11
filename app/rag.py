@@ -68,7 +68,7 @@ async def retrieve_chunks(
                     d.filename,
                     c.content,
                     c.chunk_index,
-                    (c.embedding <=> :query_embedding::vector) as distance
+                    (c.embedding <=> CAST(:query_embedding AS vector)) as distance
                 FROM chunks c
                 JOIN documents d ON c.document_id = d.id
                 WHERE c.document_id = :doc_id
@@ -91,7 +91,7 @@ async def retrieve_chunks(
                     d.filename,
                     c.content,
                     c.chunk_index,
-                    (c.embedding <=> :query_embedding::vector) as distance
+                    (c.embedding <=> CAST(:query_embedding AS vector)) as distance
                 FROM chunks c
                 JOIN documents d ON c.document_id = d.id
                 ORDER BY distance

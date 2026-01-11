@@ -4,6 +4,8 @@ import os
 import re
 from pathlib import Path
 from typing import List, Optional
+
+from fastapi import BackgroundTasks
 import aiohttp
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
@@ -79,8 +81,15 @@ async def extract_text_from_pdf(pdf_path: Path) -> str:
     text = await asyncio.to_thread(_extract_with_pypdf)
     
     # If no text extracted and OCR service is configured, use OCR
-    if not text and settings.OCR_SERVICE_URL:
-        text = await _ocr_fallback(pdf_path)
+    if not text:
+        if settings.OCR_SERVICE_URL:
+            text = await _ocr_fallback(pdf_path)
+        else:
+            print(
+                "[extract] PDF text extraction returned empty. "
+                "This PDF may be scanned/image-based. "
+                "Configure OCR_SERVICE_URL to enable OCR fallback."
+            )
     
     return text
 
@@ -159,7 +168,7 @@ def split_by_markdown_headings(text: str) -> List[str]:
     return result if result else [text]
 
 
-def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+def chunk_text(text: str, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> List[str]:
     """Split text into chunks with overlap, respecting markdown structure."""
     if chunk_size is None:
         chunk_size = settings.CHUNK_SIZE
@@ -225,6 +234,7 @@ async def index_document(document_id: int, file_path: Path):
     
     async with semaphore:
         try:
+            print(f"[index] start document_id={document_id} file={file_path}")
             # Update status to processing
             async with get_db_connection() as conn:
                 await conn.execute(
@@ -237,13 +247,17 @@ async def index_document(document_id: int, file_path: Path):
                 )
             
             # Extract text
-            text = await extract_text_from_document(file_path)
+            document_text = await extract_text_from_document(file_path)
             
-            if not text:
-                raise ValueError("No text extracted from document")
+            if not document_text:
+                raise ValueError(
+                    "No text extracted from document. "
+                    "If this is a scanned PDF, configure OCR_SERVICE_URL for OCR, "
+                    "or upload a text-based PDF/TXT/MD."
+                )
             
             # Chunk text
-            chunks = chunk_text(text)
+            chunks = chunk_text(document_text)
             
             if not chunks:
                 raise ValueError("No chunks created from document")
@@ -284,6 +298,8 @@ async def index_document(document_id: int, file_path: Path):
                     """),
                     {"doc_id": document_id}
                 )
+
+            print(f"[index] done document_id={document_id}")
         
         except Exception as e:
             # Update status to failed
@@ -296,9 +312,30 @@ async def index_document(document_id: int, file_path: Path):
                     """),
                     {"doc_id": document_id, "error": str(e)}
                 )
+            print(f"[index] failed document_id={document_id} error={e}")
             raise
 
 
-async def enqueue_indexing(document_id: int, file_path: Path):
-    """Enqueue document indexing as a background task."""
-    asyncio.create_task(index_document(document_id, file_path))
+def _log_background_exception(task: asyncio.Task):
+    try:
+        task.result()
+    except Exception as e:
+        print(f"[index] background task error: {e}")
+
+
+async def enqueue_indexing(
+    document_id: int,
+    file_path: Path,
+    background_tasks: Optional[BackgroundTasks] = None,
+):
+    """Enqueue document indexing as a background task.
+
+    Prefer FastAPI/Starlette BackgroundTasks when available (more reliable under
+    debug/reload). Falls back to asyncio.create_task otherwise.
+    """
+    if background_tasks is not None:
+        background_tasks.add_task(index_document, document_id, file_path)
+        return
+
+    task = asyncio.create_task(index_document(document_id, file_path))
+    task.add_done_callback(_log_background_exception)
