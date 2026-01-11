@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection, AsyncEngine
 from app.config import settings
 
@@ -51,24 +52,22 @@ async def initialize_database(embedding_model: str, dimension: int):
     
     async with engine.begin() as conn:
         # Create pgvector extension
-        await conn.execute(
-            "CREATE EXTENSION IF NOT EXISTS vector"
-        )
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         
         # Create metadata table
-        await conn.execute("""
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS embedding_metadata (
                 id SERIAL PRIMARY KEY,
                 model_name TEXT NOT NULL,
                 dimension INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """))
         
         # Check existing metadata
-        result = await conn.execute(
+        result = await conn.execute(text(
             "SELECT model_name, dimension FROM embedding_metadata ORDER BY id DESC LIMIT 1"
-        )
+        ))
         row = result.fetchone()
         
         if row:
@@ -82,15 +81,15 @@ async def initialize_database(embedding_model: str, dimension: int):
         else:
             # Insert metadata for first time
             await conn.execute(
-                """
+                text("""
                 INSERT INTO embedding_metadata (model_name, dimension)
                 VALUES (:model, :dim)
-                """,
+                """),
                 {"model": embedding_model, "dim": dimension}
             )
         
         # Create documents table
-        await conn.execute(f"""
+        await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -100,10 +99,10 @@ async def initialize_database(embedding_model: str, dimension: int):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """))
         
         # Create chunks table with dynamic vector dimension
-        await conn.execute(f"""
+        await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS chunks (
                 id SERIAL PRIMARY KEY,
                 document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -112,20 +111,20 @@ async def initialize_database(embedding_model: str, dimension: int):
                 embedding vector({dimension}),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """))
         
         # Create index for vector similarity search
-        await conn.execute("""
+        await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS chunks_embedding_idx 
             ON chunks USING ivfflat (embedding vector_cosine_ops)
             WITH (lists = 100)
-        """)
+        """))
         
         # Create index for document_id lookup
-        await conn.execute("""
+        await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS chunks_document_id_idx 
             ON chunks(document_id)
-        """)
+        """))
     
     # Cache the embedding dimension
     await set_embedding_dimension(dimension)

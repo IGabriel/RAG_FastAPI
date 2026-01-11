@@ -209,3 +209,6 @@ __marimo__/
 # Project specific
 storage/
 models/
+
+# test data
+documents

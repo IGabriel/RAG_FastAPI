@@ -1,9 +1,8 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: rag_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -14,6 +13,30 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ocr:
+    build:
+      context: .
+      dockerfile: ocr_service/Dockerfile
+      args:
+        # If your server cannot reach deb.debian.org, override these in your shell:
+        #   export APT_MIRROR_URL=http://mirrors.aliyun.com/debian
+        #   export APT_SECURITY_URL=http://mirrors.aliyun.com/debian-security
+        APT_MIRROR_URL: ${APT_MIRROR_URL:-http://deb.debian.org/debian}
+        APT_SECURITY_URL: ${APT_SECURITY_URL:-http://security.debian.org/debian-security}
+    container_name: rag_ocr
+    restart: unless-stopped
+    environment:
+      OCR_LANG: chi_sim+eng
+      OCR_DPI: 200
+      OCR_MAX_PAGES: 50
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=2)\""]
       interval: 10s
       timeout: 5s
       retries: 5

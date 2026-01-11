@@ -33,6 +33,37 @@ A production-ready Async RAG (Retrieval-Augmented Generation) service built with
 - At least 4GB RAM (for models)
 - 10GB disk space (for models and storage)
 
+### System Packages (Ubuntu/Debian)
+
+Install the baseline system dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-pip \
+  git \
+  curl \
+  ca-certificates
+```
+
+If `pip install -r requirements.txt` needs to build native wheels (varies by platform/Python), install build tools too:
+
+```bash
+sudo apt-get install -y build-essential python3-dev
+```
+
+Docker (choose one):
+
+```bash
+# Option A (Ubuntu packages)
+sudo apt-get install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER
+
+# Option B (official Docker Engine) - see: https://docs.docker.com/engine/install/
+```
+
 ## Quick Start
 
 ### 1. Clone the Repository
@@ -45,7 +76,7 @@ cd RAG_FastAPI
 ### 2. Start PostgreSQL with pgvector
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This starts a PostgreSQL 16 container with pgvector extension.
@@ -69,7 +100,46 @@ huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir models/Qwen2.5-0
 
 # Option 2: Manual download from https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
 # Download all files and place them in models/Qwen2.5-0.5B-Instruct/
+
+# Option 3: from modelscope
+# modelscope download --model Qwen/Qwen2.5-0.5B-Instruct --local_dir models/Qwen2.5-0.5B-Instruct
 ```
+
+If your host cannot access Hugging Face, prefer the ModelScope option above, and keep `LLM_MODEL_PATH` pointing to the local folder:
+
+```bash
+LLM_MODEL_PATH=./models/Qwen2.5-0.5B-Instruct
+```
+
+### 4.1 Download the Embedding Model (Recommended)
+
+This service uses `sentence-transformers` and will try to download the embedding model on first startup. If your server cannot access Hugging Face (common on some cloud hosts), download it to a local folder and point `EMBEDDING_MODEL` to that path.
+
+```bash
+mkdir -p models
+
+# If you are in mainland China, this often helps:
+export HF_ENDPOINT=https://hf-mirror.com
+
+# Download the embedding model to a local directory
+huggingface-cli download BAAI/bge-small-zh-v1.5 --local-dir models/bge-small-zh-v1.5
+
+# Option 2: ModelScope (often works better on mainland China servers)
+# modelscope download --model BAAI/bge-small-zh-v1.5 --local_dir models/bge-small-zh-v1.5
+```
+
+Then set in `.env`:
+
+```bash
+EMBEDDING_MODEL=./models/bge-small-zh-v1.5
+
+# If the server cannot access huggingface.co at runtime, force offline mode:
+HF_HUB_OFFLINE=1
+# (Optional)
+TRANSFORMERS_OFFLINE=1
+```
+
+If you still cannot download from the server, do the download on a machine with internet access, then copy `models/bge-small-zh-v1.5/` to the server.
 
 ### 5. Configure Environment Variables
 
@@ -89,6 +159,124 @@ python -m app.main
 ```
 
 The API will be available at `http://localhost:8000`
+
+## VS Code Remote Development (Remote-SSH / Remote Tunnels)
+
+This project works well with VS Code remote development. The recommended workflow is:
+
+- Use **Remote-SSH** to edit and run the code on the server.
+- Use **port forwarding** to access the FastAPI UI (e.g. `/docs`) from your local browser.
+- Optionally, use **Remote Tunnels** when you cannot (or do not want to) SSH directly.
+
+### Option A: Remote-SSH (Recommended)
+
+#### 1) Configure SSH host alias (Windows example)
+
+Edit your local SSH config (Windows): `C:\Users\<you>\.ssh\config` and add a stable alias.
+
+```ssh-config
+Host rag-fastapi
+    HostName <YOUR_SERVER_IP>
+    User <YOUR_SSH_USER>
+    Port 22
+    IdentityFile C:/Users/<you>/.ssh/id_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+```
+
+If the server IP changes later, you only need to update `HostName`.
+
+#### 2) Connect from VS Code
+
+- Install the VS Code extension: **Remote - SSH**
+- Open the Command Palette and run: `Remote-SSH: Connect to Host...`
+- Select your host alias (e.g. `rag-fastapi`)
+
+After connecting, the VS Code window should indicate `SSH: <host>` in the bottom-left corner.
+
+#### 3) Forward port 8000 to your local machine
+
+If your FastAPI server listens on `127.0.0.1:8000` on the remote machine (common for dev), your local browser cannot reach it directly. Use port forwarding:
+
+- Open the **Ports** panel in VS Code (Remote Explorer → Ports)
+- Click **Forward a Port** and enter `8000`
+- Open the forwarded **Local Address** (e.g. `http://127.0.0.1:8000/docs`)
+
+If forwarding to local `8000` fails, map to another local port (example `18000`):
+
+- Create the forwarding for remote `8000`
+- Right-click the entry → **Change Local Port** → `18000`
+- Then open `http://127.0.0.1:18000/docs`
+
+##### Alternative: manual SSH port forward
+
+You can also forward ports using an SSH command from your local machine:
+
+```bash
+ssh -N -L 18000:127.0.0.1:8000 rag-fastapi
+```
+
+Then open `http://127.0.0.1:18000/health` or `http://127.0.0.1:18000/docs`.
+
+#### 4) Trigger endpoints without a browser
+
+If you prefer not to use a browser (or you are only debugging), run `curl` on the remote machine:
+
+```bash
+curl -v http://127.0.0.1:8000/health
+curl -sS -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query":"hello","top_k":3}'
+```
+
+### Option B: VS Code Remote Tunnels
+
+Remote Tunnels let you connect to a machine without opening inbound SSH to the Internet. This is useful when:
+
+- You are behind NAT/firewall and cannot SSH into the machine directly.
+- The public IP changes frequently.
+- You want an easy “sign-in to connect” experience.
+
+#### 1) Start a tunnel on the remote machine
+
+On the remote machine, start VS Code (or use the VS Code CLI) and run:
+
+- Command Palette: `Remote Tunnels: Turn on Remote Tunnel...`
+- Sign in (GitHub or Microsoft account)
+- Give the machine a name
+
+Keep the tunnel running while you work.
+
+#### 2) Connect from your local VS Code
+
+On your local machine:
+
+- Command Palette: `Remote Tunnels: Connect to Remote Tunnel...`
+- Choose the machine name you created
+
+#### 3) Access FastAPI via forwarded ports
+
+Once connected via a tunnel, use the same **Ports** panel workflow:
+
+- Forward remote `8000` to a local port
+- Open `/docs` or `/health` in your local browser
+
+### Troubleshooting
+
+- **Browser shows `ERR_CONNECTION_REFUSED` for `http://127.0.0.1:8000`**
+  - `127.0.0.1` always means “this machine”. If FastAPI runs on the remote server, you must use VS Code port forwarding (or SSH `-L`) to access it from your local browser.
+
+- **VS Code shows: “Unable to forward localhost:8000…”**
+  - Try forwarding to a different local port (e.g. `18000`).
+  - Check whether another VS Code window already forwarded the same port.
+  - Use manual SSH forwarding as a fallback: `ssh -N -L 18000:127.0.0.1:8000 <host>`.
+
+- **Uvicorn shows “Application startup complete” but the terminal does not return**
+  - This is normal: the server is running and waiting for requests.
+
+- **`--reload` + debugger breakpoints not hitting reliably**
+  - Use the VS Code launch configuration that enables subprocess debugging (see `.vscode/launch.json`).
 
 ### 7. Access API Documentation
 
@@ -148,6 +336,42 @@ GET /documents?page=1&per_page=10
 - `processing` - Currently being indexed
 - `completed` - Successfully indexed and ready for queries
 - `failed` - Processing failed (check logs)
+
+## OCR (Scanned PDFs)
+
+If a PDF has no selectable text (image-only/scanned PDF), `pypdf` may extract an empty string and indexing will fail unless OCR is enabled.
+
+This repo includes a minimal OCR service (FastAPI + Tesseract) that implements the expected `OCR_SERVICE_URL` contract.
+
+- Start OCR service:
+  - `docker compose up -d ocr`
+- Set `.env`:
+  - `OCR_SERVICE_URL=http://127.0.0.1:9001/ocr`
+- Reindex a document:
+  - `curl -sS -X POST http://127.0.0.1:8000/documents/<DOC_ID>/reindex`
+
+Notes:
+- OCR quality depends on PDF quality and language pack. Default is `chi_sim+eng`.
+- You can change OCR settings via docker-compose environment: `OCR_LANG`, `OCR_DPI`, `OCR_MAX_PAGES`.
+
+### If `docker compose build ocr` fails (apt timeouts)
+
+On some servers (especially with restricted outbound network), the OCR image build may fail while running `apt-get`.
+In that case, use a closer Debian mirror for the OCR build:
+
+```bash
+export APT_MIRROR_URL=http://mirrors.aliyun.com/debian
+export APT_SECURITY_URL=http://mirrors.aliyun.com/debian-security
+docker compose build ocr
+docker compose up -d ocr
+```
+Common symptoms include:
+
+- `Could not connect to debian.map.fastlydns.net:80 ... connection timed out`
+- `E: Unable to locate package tesseract-ocr` (usually because `apt-get update` could not fetch indexes)
+
+If you prefer not to export variables each time, you can also put these in the local `.env` file in the repo root
+(Docker Compose reads it automatically) and then run `docker compose build ocr`.
 
 #### Get Document Details
 ```http

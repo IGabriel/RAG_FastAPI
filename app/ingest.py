@@ -1,10 +1,14 @@
 """Document ingestion, chunking, and embedding."""
 import asyncio
+import os
 import re
 from pathlib import Path
 from typing import List, Optional
+
+from fastapi import BackgroundTasks
 import aiohttp
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import text
 from pypdf import PdfReader
 import numpy as np
 
@@ -21,7 +25,27 @@ def get_embedding_model() -> SentenceTransformer:
     """Get or load the embedding model."""
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        # If the host cannot access huggingface.co, run in offline/local mode.
+        # Libraries also respect env vars like HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE,
+        # but SentenceTransformer benefits from an explicit local_files_only flag.
+        model_ref = settings.EMBEDDING_MODEL
+        model_path_exists = Path(model_ref).exists()
+        local_only = (
+            model_path_exists
+            or os.getenv("HF_HUB_OFFLINE") == "1"
+            or os.getenv("TRANSFORMERS_OFFLINE") == "1"
+        )
+        cache_folder = (
+            os.getenv("SENTENCE_TRANSFORMERS_HOME")
+            or os.getenv("HF_HOME")
+            or os.getenv("TRANSFORMERS_CACHE")
+        )
+
+        _embedding_model = SentenceTransformer(
+            model_ref,
+            cache_folder=cache_folder,
+            local_files_only=local_only,
+        )
     return _embedding_model
 
 
@@ -57,8 +81,15 @@ async def extract_text_from_pdf(pdf_path: Path) -> str:
     text = await asyncio.to_thread(_extract_with_pypdf)
     
     # If no text extracted and OCR service is configured, use OCR
-    if not text and settings.OCR_SERVICE_URL:
-        text = await _ocr_fallback(pdf_path)
+    if not text:
+        if settings.OCR_SERVICE_URL:
+            text = await _ocr_fallback(pdf_path)
+        else:
+            print(
+                "[extract] PDF text extraction returned empty. "
+                "This PDF may be scanned/image-based. "
+                "Configure OCR_SERVICE_URL to enable OCR fallback."
+            )
     
     return text
 
@@ -137,7 +168,7 @@ def split_by_markdown_headings(text: str) -> List[str]:
     return result if result else [text]
 
 
-def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+def chunk_text(text: str, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> List[str]:
     """Split text into chunks with overlap, respecting markdown structure."""
     if chunk_size is None:
         chunk_size = settings.CHUNK_SIZE
@@ -203,25 +234,30 @@ async def index_document(document_id: int, file_path: Path):
     
     async with semaphore:
         try:
+            print(f"[index] start document_id={document_id} file={file_path}")
             # Update status to processing
             async with get_db_connection() as conn:
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'processing', updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id}
                 )
             
             # Extract text
-            text = await extract_text_from_document(file_path)
+            document_text = await extract_text_from_document(file_path)
             
-            if not text:
-                raise ValueError("No text extracted from document")
+            if not document_text:
+                raise ValueError(
+                    "No text extracted from document. "
+                    "If this is a scanned PDF, configure OCR_SERVICE_URL for OCR, "
+                    "or upload a text-based PDF/TXT/MD."
+                )
             
             # Chunk text
-            chunks = chunk_text(text)
+            chunks = chunk_text(document_text)
             
             if not chunks:
                 raise ValueError("No chunks created from document")
@@ -233,7 +269,7 @@ async def index_document(document_id: int, file_path: Path):
             async with get_db_connection() as conn:
                 # Delete existing chunks (for reindexing)
                 await conn.execute(
-                    "DELETE FROM chunks WHERE document_id = :doc_id",
+                    text("DELETE FROM chunks WHERE document_id = :doc_id"),
                     {"doc_id": document_id}
                 )
                 
@@ -241,10 +277,10 @@ async def index_document(document_id: int, file_path: Path):
                 for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                     embedding_list = embedding.tolist()
                     await conn.execute(
-                        """
+                        text("""
                         INSERT INTO chunks (document_id, chunk_index, content, embedding)
                         VALUES (:doc_id, :idx, :content, :embedding)
-                        """,
+                        """),
                         {
                             "doc_id": document_id,
                             "idx": idx,
@@ -255,28 +291,51 @@ async def index_document(document_id: int, file_path: Path):
                 
                 # Update document status
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'completed', error_message = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id}
                 )
+
+            print(f"[index] done document_id={document_id}")
         
         except Exception as e:
             # Update status to failed
             async with get_db_connection() as conn:
                 await conn.execute(
-                    """
+                    text("""
                     UPDATE documents 
                     SET status = 'failed', error_message = :error, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :doc_id
-                    """,
+                    """),
                     {"doc_id": document_id, "error": str(e)}
                 )
+            print(f"[index] failed document_id={document_id} error={e}")
             raise
 
 
-async def enqueue_indexing(document_id: int, file_path: Path):
-    """Enqueue document indexing as a background task."""
-    asyncio.create_task(index_document(document_id, file_path))
+def _log_background_exception(task: asyncio.Task):
+    try:
+        task.result()
+    except Exception as e:
+        print(f"[index] background task error: {e}")
+
+
+async def enqueue_indexing(
+    document_id: int,
+    file_path: Path,
+    background_tasks: Optional[BackgroundTasks] = None,
+):
+    """Enqueue document indexing as a background task.
+
+    Prefer FastAPI/Starlette BackgroundTasks when available (more reliable under
+    debug/reload). Falls back to asyncio.create_task otherwise.
+    """
+    if background_tasks is not None:
+        background_tasks.add_task(index_document, document_id, file_path)
+        return
+
+    task = asyncio.create_task(index_document(document_id, file_path))
+    task.add_done_callback(_log_background_exception)

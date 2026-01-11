@@ -1,26 +1,26 @@
 # FastAPI and web framework
-fastapi==0.115.12
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+fastapi
+uvicorn[standard]
+python-multipart
 
 # Database
-sqlalchemy==2.0.36
-asyncpg==0.30.0
-psycopg2-binary==2.9.10
+sqlalchemy
+asyncpg
+psycopg2-binary
 
 # ML and embeddings
-sentence-transformers==3.3.1
-transformers==4.48.0
-torch==2.6.0
-numpy==1.26.4
+sentence-transformers
+transformers
+torch
+numpy
 
 # PDF processing
-pypdf==5.1.0
+pypdf
 
 # HTTP client for OCR
-aiohttp==3.13.3
+aiohttp
 
 # Configuration
-pydantic==2.10.5
-pydantic-settings==2.7.1
-python-dotenv==1.0.1
+pydantic
+pydantic-settings
+python-dotenv
