@@ -160,6 +160,124 @@ python -m app.main
 
 The API will be available at `http://localhost:8000`
 
+## VS Code Remote Development (Remote-SSH / Remote Tunnels)
+
+This project works well with VS Code remote development. The recommended workflow is:
+
+- Use **Remote-SSH** to edit and run the code on the server.
+- Use **port forwarding** to access the FastAPI UI (e.g. `/docs`) from your local browser.
+- Optionally, use **Remote Tunnels** when you cannot (or do not want to) SSH directly.
+
+### Option A: Remote-SSH (Recommended)
+
+#### 1) Configure SSH host alias (Windows example)
+
+Edit your local SSH config (Windows): `C:\Users\<you>\.ssh\config` and add a stable alias.
+
+```ssh-config
+Host rag-fastapi
+    HostName <YOUR_SERVER_IP>
+    User <YOUR_SSH_USER>
+    Port 22
+    IdentityFile C:/Users/<you>/.ssh/id_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+```
+
+If the server IP changes later, you only need to update `HostName`.
+
+#### 2) Connect from VS Code
+
+- Install the VS Code extension: **Remote - SSH**
+- Open the Command Palette and run: `Remote-SSH: Connect to Host...`
+- Select your host alias (e.g. `rag-fastapi`)
+
+After connecting, the VS Code window should indicate `SSH: <host>` in the bottom-left corner.
+
+#### 3) Forward port 8000 to your local machine
+
+If your FastAPI server listens on `127.0.0.1:8000` on the remote machine (common for dev), your local browser cannot reach it directly. Use port forwarding:
+
+- Open the **Ports** panel in VS Code (Remote Explorer → Ports)
+- Click **Forward a Port** and enter `8000`
+- Open the forwarded **Local Address** (e.g. `http://127.0.0.1:8000/docs`)
+
+If forwarding to local `8000` fails, map to another local port (example `18000`):
+
+- Create the forwarding for remote `8000`
+- Right-click the entry → **Change Local Port** → `18000`
+- Then open `http://127.0.0.1:18000/docs`
+
+##### Alternative: manual SSH port forward
+
+You can also forward ports using an SSH command from your local machine:
+
+```bash
+ssh -N -L 18000:127.0.0.1:8000 rag-fastapi
+```
+
+Then open `http://127.0.0.1:18000/health` or `http://127.0.0.1:18000/docs`.
+
+#### 4) Trigger endpoints without a browser
+
+If you prefer not to use a browser (or you are only debugging), run `curl` on the remote machine:
+
+```bash
+curl -v http://127.0.0.1:8000/health
+curl -sS -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query":"hello","top_k":3}'
+```
+
+### Option B: VS Code Remote Tunnels
+
+Remote Tunnels let you connect to a machine without opening inbound SSH to the Internet. This is useful when:
+
+- You are behind NAT/firewall and cannot SSH into the machine directly.
+- The public IP changes frequently.
+- You want an easy “sign-in to connect” experience.
+
+#### 1) Start a tunnel on the remote machine
+
+On the remote machine, start VS Code (or use the VS Code CLI) and run:
+
+- Command Palette: `Remote Tunnels: Turn on Remote Tunnel...`
+- Sign in (GitHub or Microsoft account)
+- Give the machine a name
+
+Keep the tunnel running while you work.
+
+#### 2) Connect from your local VS Code
+
+On your local machine:
+
+- Command Palette: `Remote Tunnels: Connect to Remote Tunnel...`
+- Choose the machine name you created
+
+#### 3) Access FastAPI via forwarded ports
+
+Once connected via a tunnel, use the same **Ports** panel workflow:
+
+- Forward remote `8000` to a local port
+- Open `/docs` or `/health` in your local browser
+
+### Troubleshooting
+
+- **Browser shows `ERR_CONNECTION_REFUSED` for `http://127.0.0.1:8000`**
+  - `127.0.0.1` always means “this machine”. If FastAPI runs on the remote server, you must use VS Code port forwarding (or SSH `-L`) to access it from your local browser.
+
+- **VS Code shows: “Unable to forward localhost:8000…”**
+  - Try forwarding to a different local port (e.g. `18000`).
+  - Check whether another VS Code window already forwarded the same port.
+  - Use manual SSH forwarding as a fallback: `ssh -N -L 18000:127.0.0.1:8000 <host>`.
+
+- **Uvicorn shows “Application startup complete” but the terminal does not return**
+  - This is normal: the server is running and waiting for requests.
+
+- **`--reload` + debugger breakpoints not hitting reliably**
+  - Use the VS Code launch configuration that enables subprocess debugging (see `.vscode/launch.json`).
+
 ### 7. Access API Documentation
 
 - Swagger UI: http://localhost:8000/docs
