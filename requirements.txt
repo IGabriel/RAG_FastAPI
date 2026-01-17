@@ -13,6 +13,11 @@ sentence-transformers
 transformers
 torch
 numpy
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+pgvector
 
 # PDF processing
 pypdf

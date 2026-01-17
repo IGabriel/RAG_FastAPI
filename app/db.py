@@ -136,3 +136,66 @@ async def close_database():
     if _engine:
         await _engine.dispose()
         _engine = None
+
+
+async def get_langchain_chunk_counts(collection_name: str) -> dict[int, int]:
+    """Return a mapping of document_id to chunk count from LangChain PGVector tables."""
+    async with get_db_connection() as conn:
+        result = await conn.execute(
+            text("""
+            SELECT
+                (e.cmetadata->>'document_id')::int AS document_id,
+                COUNT(*) AS chunk_count
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection
+              AND e.cmetadata ? 'document_id'
+            GROUP BY (e.cmetadata->>'document_id')::int
+            """),
+            {"collection": collection_name}
+        )
+        rows = result.fetchall()
+
+    return {row.document_id: row.chunk_count for row in rows}
+
+
+async def get_langchain_chunk_count(document_id: int, collection_name: str) -> int:
+    """Return chunk count for a single document_id."""
+    async with get_db_connection() as conn:
+        result = await conn.execute(
+            text("""
+            SELECT COUNT(*) AS chunk_count
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection
+              AND e.cmetadata->>'document_id' = :doc_id
+            """),
+            {"collection": collection_name, "doc_id": str(document_id)}
+        )
+        row = result.fetchone()
+        return int(row.chunk_count) if row else 0
+
+
+async def delete_langchain_embeddings(document_id: int, collection_name: str):
+    """Delete embeddings for a document_id from LangChain PGVector tables."""
+    async with get_db_connection() as conn:
+        # Resolve collection id
+        result = await conn.execute(
+            text("""
+            SELECT uuid FROM langchain_pg_collection WHERE name = :collection
+            """),
+            {"collection": collection_name}
+        )
+        row = result.fetchone()
+        if not row:
+            return
+
+        collection_id = row.uuid
+        await conn.execute(
+            text("""
+            DELETE FROM langchain_pg_embedding
+            WHERE collection_id = :collection_id
+              AND cmetadata->>'document_id' = :doc_id
+            """),
+            {"collection_id": collection_id, "doc_id": str(document_id)}
+        )

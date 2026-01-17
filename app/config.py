@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ragdb"
+    DATABASE_URL_SYNC: str = ""
     
     # Storage
     STORAGE_DIR: Path = Path("./storage")
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
     
     # Embedding
     EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+
+    # Vector store
+    VECTOR_COLLECTION: str = "rag_documents"
     
     # LLM
     LLM_MODEL_PATH: str = "./models/Qwen2.5-0.5B-Instruct"

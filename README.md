@@ -148,6 +148,22 @@ cp .env.example .env
 # Edit .env if needed (defaults should work for local development)
 ```
 
+#### LangChain + PGVector (Offline)
+
+- The service now uses LangChain's PGVector store. It requires a **sync** PostgreSQL URL for LangChain:
+
+```bash
+DATABASE_URL_SYNC=postgresql+psycopg2://postgres:postgres@localhost:5432/ragdb
+VECTOR_COLLECTION=rag_documents
+```
+
+- Keep models fully local (ModelScope download) and enable offline mode if needed:
+
+```bash
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+```
+
 ### 6. Run the Service
 
 ```bash
