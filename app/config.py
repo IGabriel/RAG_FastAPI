@@ -20,6 +20,11 @@ class Settings(BaseSettings):
 
     # Vector store
     VECTOR_COLLECTION: str = "rag_documents"
+
+    # LangChain retrieval features
+    USE_SELF_QUERY: bool = False
+    ENABLE_RERANKER: bool = False
+    RERANKER_MODEL_PATH: str = ""
     
     # LLM
     LLM_MODEL_PATH: str = "./models/Qwen2.5-0.5B-Instruct"

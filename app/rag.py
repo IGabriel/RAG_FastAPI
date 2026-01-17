@@ -4,9 +4,10 @@ from typing import List, Optional, Tuple
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain.chains import RetrievalQA
 
 from app.config import settings
-from app.langchain_utils import get_llm, similarity_search_with_score
+from app.langchain_utils import get_llm, get_retriever, similarity_search_with_score
 from app.schemas import ChunkResult
 
 
@@ -80,10 +81,36 @@ Answer:
 
 async def chat(query: str, top_k: int = 5, document_id: Optional[int] = None) -> Tuple[str, List[ChunkResult]]:
     """Perform RAG: retrieve chunks and generate answer."""
-    chunks = await retrieve_chunks(query, top_k, document_id)
+    retriever = get_retriever(top_k, document_id)
+    llm = get_llm()
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        return_source_documents=True,
+    )
+
+    result = await asyncio.to_thread(qa_chain.invoke, {"query": query})
+    docs = result.get("source_documents", [])
+
+    # Build ChunkResult list from docs (score not available here)
+    chunks: List[ChunkResult] = []
+    for idx, doc in enumerate(docs):
+        metadata = doc.metadata or {}
+        chunks.append(
+            ChunkResult(
+                chunk_id=int(metadata.get("chunk_id", idx)),
+                document_id=int(metadata.get("document_id", -1)),
+                filename=str(metadata.get("filename", "")),
+                content=doc.page_content,
+                distance=0.0,
+                chunk_index=int(metadata.get("chunk_index", idx)),
+            )
+        )
 
     if not chunks:
         return "No relevant information found in the documents.", []
 
-    answer = await generate_answer(query, chunks)
+    answer = result.get("result", "").strip()
     return answer, chunks
