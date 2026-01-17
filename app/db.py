@@ -101,30 +101,7 @@ async def initialize_database(embedding_model: str, dimension: int):
             )
         """))
         
-        # Create chunks table with dynamic vector dimension
-        await conn.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS chunks (
-                id SERIAL PRIMARY KEY,
-                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                embedding vector({dimension}),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
-        
-        # Create index for vector similarity search
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS chunks_embedding_idx 
-            ON chunks USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
-        """))
-        
-        # Create index for document_id lookup
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS chunks_document_id_idx 
-            ON chunks(document_id)
-        """))
+        # Note: vector storage now uses LangChain PGVector tables
     
     # Cache the embedding dimension
     await set_embedding_dimension(dimension)
