@@ -295,7 +295,7 @@ Content-Type: multipart/form-data
 file: <file>
 ```
 
-**Supported formats:** PDF, TXT, MD (up to 100MB)
+**Supported formats:** PDF, TXT, MD, DOCX (up to 100MB)
 
 **Response:**
 ```json
