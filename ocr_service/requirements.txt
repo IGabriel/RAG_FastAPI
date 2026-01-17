@@ -4,3 +4,4 @@ python-multipart
 pytesseract
 pdf2image
 pillow
+python-docx

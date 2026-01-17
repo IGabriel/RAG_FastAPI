@@ -1,5 +1,7 @@
 """RAG retrieval and generation."""
 import asyncio
+import json
+from pathlib import Path
 from typing import List, Optional, Tuple
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -18,19 +20,43 @@ _llm_tokenizer: Optional[AutoTokenizer] = None
 _generation_semaphore: Optional[asyncio.Semaphore] = None
 
 
+def resolve_llm_model_path(model_path: str) -> str:
+    """Resolve a valid local model directory that has config.json with model_type."""
+    base = Path(model_path)
+    config_path = base / "config.json"
+
+    def _has_model_type(cfg: Path) -> bool:
+        try:
+            with open(cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return isinstance(data, dict) and "model_type" in data
+        except Exception:
+            return False
+
+    if config_path.exists() and _has_model_type(config_path):
+        return str(base)
+
+    if base.exists():
+        for cfg in base.rglob("config.json"):
+            if _has_model_type(cfg):
+                return str(cfg.parent)
+
+    return str(base)
+
+
 def get_llm_model() -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Get or load the LLM model and tokenizer."""
     global _llm_model, _llm_tokenizer
     
     if _llm_model is None or _llm_tokenizer is None:
+        model_path = resolve_llm_model_path(settings.LLM_MODEL_PATH)
         _llm_tokenizer = AutoTokenizer.from_pretrained(
-            settings.LLM_MODEL_PATH,
+            model_path,
             trust_remote_code=True
         )
         _llm_model = AutoModelForCausalLM.from_pretrained(
-            settings.LLM_MODEL_PATH,
+            model_path,
             torch_dtype=torch.float32,
-            device_map="auto",
             trust_remote_code=True
         )
         _llm_model.eval()

@@ -10,6 +10,7 @@ import aiohttp
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
 from pypdf import PdfReader
+from docx import Document
 import numpy as np
 
 from app.config import settings
@@ -133,6 +134,13 @@ def extract_text_from_markdown(md_path: Path) -> str:
         return f.read()
 
 
+def extract_text_from_docx(docx_path: Path) -> str:
+    """Extract text from DOCX file."""
+    doc = Document(str(docx_path))
+    paragraphs = [p.text for p in doc.paragraphs if p.text]
+    return "\n".join(paragraphs).strip()
+
+
 async def extract_text_from_document(file_path: Path) -> str:
     """Extract text from document based on file type."""
     suffix = file_path.suffix.lower()
@@ -143,6 +151,8 @@ async def extract_text_from_document(file_path: Path) -> str:
         return await asyncio.to_thread(extract_text_from_txt, file_path)
     elif suffix in ['.md', '.markdown']:
         return await asyncio.to_thread(extract_text_from_markdown, file_path)
+    elif suffix == '.docx':
+        return await asyncio.to_thread(extract_text_from_docx, file_path)
     else:
         raise ValueError(f"Unsupported file type: {suffix}")
 

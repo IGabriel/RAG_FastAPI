@@ -89,7 +89,7 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
     
     # Validate file extension
     suffix = Path(file.filename).suffix.lower()
-    supported_extensions = ['.pdf', '.txt', '.text', '.md', '.markdown']
+    supported_extensions = ['.pdf', '.txt', '.text', '.md', '.markdown', '.docx']
     if suffix not in supported_extensions:
         raise HTTPException(
             status_code=400,

@@ -17,6 +17,9 @@ numpy
 # PDF processing
 pypdf
 
+# DOCX processing
+python-docx
+
 # HTTP client for OCR
 aiohttp
 
