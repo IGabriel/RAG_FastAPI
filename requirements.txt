@@ -27,3 +27,6 @@ aiohttp
 pydantic
 pydantic-settings
 python-dotenv
+
+# Chinese tokenization (THULAC)
+thulac
