@@ -1,25 +1,21 @@
 """Document ingestion, chunking, and embedding."""
 import asyncio
-import os
 import re
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import BackgroundTasks
-import aiohttp
-from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
-from pypdf import PdfReader
-from docx import Document
-import numpy as np
+from langchain_community.document_loaders import TextLoader, Docx2txtLoader
 
 from app.config import settings
-from app.db import get_db_connection
+from app.db import get_db_connection, delete_langchain_embeddings
+from app.langchain_utils import get_embeddings, get_vectorstore
+from app.langchain_loaders import OCRPdfLoader
 import thulac  # type: ignore
 
 
-# Global embedding model and processing queue
-_embedding_model: Optional[SentenceTransformer] = None
+# Global processing queue
 _indexing_semaphore: Optional[asyncio.Semaphore] = None
 _thulac_instance = None
 
@@ -86,7 +82,9 @@ def _tokenize_cjk_words(text: str) -> List[str]:
     if tokenizer is not None:
         # thulac.cut returns a space-separated string when text=True
         cut_text = tokenizer.cut(text, text=True)
-        return [t for t in cut_text.split() if t]
+        if isinstance(cut_text, str):
+            return [t for t in cut_text.split() if t]
+        return [t for t, _ in cut_text if t]
 
     return []
 
@@ -178,34 +176,6 @@ def _chunk_text_cjk_words(text: str, chunk_size: int, overlap: int) -> List[str]
     return [c.strip() for c in chunks if c.strip()]
 
 
-def get_embedding_model() -> SentenceTransformer:
-    """Get or load the embedding model."""
-    global _embedding_model
-    if _embedding_model is None:
-        # If the host cannot access huggingface.co, run in offline/local mode.
-        # Libraries also respect env vars like HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE,
-        # but SentenceTransformer benefits from an explicit local_files_only flag.
-        model_ref = settings.EMBEDDING_MODEL
-        model_path_exists = Path(model_ref).exists()
-        local_only = (
-            model_path_exists
-            or os.getenv("HF_HUB_OFFLINE") == "1"
-            or os.getenv("TRANSFORMERS_OFFLINE") == "1"
-        )
-        cache_folder = (
-            os.getenv("SENTENCE_TRANSFORMERS_HOME")
-            or os.getenv("HF_HOME")
-            or os.getenv("TRANSFORMERS_CACHE")
-        )
-
-        _embedding_model = SentenceTransformer(
-            model_ref,
-            cache_folder=cache_folder,
-            local_files_only=local_only,
-        )
-    return _embedding_model
-
-
 def get_indexing_semaphore() -> asyncio.Semaphore:
     """Get the indexing concurrency semaphore."""
     global _indexing_semaphore
@@ -216,101 +186,30 @@ def get_indexing_semaphore() -> asyncio.Semaphore:
 
 def probe_embedding_dimension() -> int:
     """Probe the embedding dimension of the model."""
-    model = get_embedding_model()
-    test_embedding = model.encode(["test"], convert_to_numpy=True)
-    return test_embedding.shape[1]
+    embeddings = get_embeddings()
+    test_embedding = embeddings.embed_query("test")
+    return len(test_embedding)
 
 
-async def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract text from PDF, using OCR service if needed."""
-    
-    def _extract_with_pypdf():
-        """Synchronous PDF text extraction."""
-        reader = PdfReader(str(pdf_path))
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text.strip()
-    
-    # Try pypdf first
-    text = await asyncio.to_thread(_extract_with_pypdf)
-    
-    # If no text extracted and OCR service is configured, use OCR
-    if not text:
-        if settings.OCR_SERVICE_URL:
-            text = await _ocr_fallback(pdf_path)
-        else:
-            print(
-                "[extract] PDF text extraction returned empty. "
-                "This PDF may be scanned/image-based. "
-                "Configure OCR_SERVICE_URL to enable OCR fallback."
-            )
-    
-    return text
+def _load_with_langchain(file_path: Path) -> str:
+    """Load document text using LangChain loaders (sync)."""
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        loader = OCRPdfLoader(str(file_path))
+    elif suffix in [".txt", ".text", ".md", ".markdown"]:
+        loader = TextLoader(str(file_path), encoding="utf-8")
+    elif suffix == ".docx":
+        loader = Docx2txtLoader(str(file_path))
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}")
 
-
-async def _ocr_fallback(pdf_path: Path) -> str:
-    """Use external OCR service for scanned PDFs."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            with open(pdf_path, 'rb') as f:
-                data = aiohttp.FormData()
-                data.add_field('file', f, filename=pdf_path.name)
-                
-                async with session.post(
-                    settings.OCR_SERVICE_URL,
-                    data=data,
-                    timeout=aiohttp.ClientTimeout(total=300)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        # Expected format: {"pages": [{"page": 1, "text": "..."}]}
-                        pages = result.get("pages", [])
-                        text = "\n".join(page.get("text", "") for page in pages)
-                        return text.strip()
-                    else:
-                        print(f"OCR service returned status {response.status}")
-                        return ""
-    except Exception as e:
-        print(f"OCR service error: {e}")
-        return ""
-
-
-def extract_text_from_txt(txt_path: Path) -> str:
-    """Extract text from text file."""
-    with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
-        return f.read()
-
-
-def extract_text_from_markdown(md_path: Path) -> str:
-    """Extract text from markdown file."""
-    with open(md_path, 'r', encoding='utf-8', errors='ignore') as f:
-        return f.read()
-
-
-def extract_text_from_docx(docx_path: Path) -> str:
-    """Extract text from DOCX file."""
-    doc = Document(str(docx_path))
-    paragraphs = [p.text for p in doc.paragraphs if p.text]
-    return "\n".join(paragraphs).strip()
+    docs = loader.load()
+    return "\n".join(d.page_content for d in docs if d.page_content).strip()
 
 
 async def extract_text_from_document(file_path: Path) -> str:
     """Extract text from document based on file type."""
-    suffix = file_path.suffix.lower()
-    
-    if suffix == '.pdf':
-        return await extract_text_from_pdf(file_path)
-    elif suffix in ['.txt', '.text']:
-        return await asyncio.to_thread(extract_text_from_txt, file_path)
-    elif suffix in ['.md', '.markdown']:
-        return await asyncio.to_thread(extract_text_from_markdown, file_path)
-    elif suffix == '.docx':
-        return await asyncio.to_thread(extract_text_from_docx, file_path)
-    else:
-        raise ValueError(f"Unsupported file type: {suffix}")
+    return await asyncio.to_thread(_load_with_langchain, file_path)
 
 
 def split_by_markdown_headings(text: str) -> List[str]:
@@ -387,17 +286,6 @@ def chunk_text(text: str, chunk_size: Optional[int] = None, overlap: Optional[in
     return [c.strip() for c in chunks if c.strip()]
 
 
-async def embed_texts(texts: List[str]) -> np.ndarray:
-    """Generate embeddings for a list of texts."""
-    model = get_embedding_model()
-    
-    def _encode():
-        return model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-    
-    embeddings = await asyncio.to_thread(_encode)
-    return embeddings
-
-
 async def index_document(document_id: int, file_path: Path):
     """Index a document: extract text, chunk, embed, and store in database."""
     semaphore = get_indexing_semaphore()
@@ -433,34 +321,25 @@ async def index_document(document_id: int, file_path: Path):
             if not chunks:
                 raise ValueError("No chunks created from document")
             
-            # Generate embeddings
-            embeddings = await embed_texts(chunks)
-            
-            # Store chunks in database
+            # Delete existing embeddings (for reindexing)
+            await delete_langchain_embeddings(document_id, settings.VECTOR_COLLECTION)
+
+            # Store chunks in LangChain PGVector
+            vectorstore = get_vectorstore()
+            metadatas = [
+                {
+                    "document_id": document_id,
+                    "filename": file_path.name,
+                    "chunk_index": idx,
+                    "chunk_id": idx,
+                }
+                for idx, _ in enumerate(chunks)
+            ]
+            ids = [f"{document_id}-{idx}" for idx in range(len(chunks))]
+            await asyncio.to_thread(vectorstore.add_texts, texts=chunks, metadatas=metadatas, ids=ids)
+
+            # Update document status
             async with get_db_connection() as conn:
-                # Delete existing chunks (for reindexing)
-                await conn.execute(
-                    text("DELETE FROM chunks WHERE document_id = :doc_id"),
-                    {"doc_id": document_id}
-                )
-                
-                # Insert new chunks
-                for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                    embedding_list = embedding.tolist()
-                    await conn.execute(
-                        text("""
-                        INSERT INTO chunks (document_id, chunk_index, content, embedding)
-                        VALUES (:doc_id, :idx, :content, :embedding)
-                        """),
-                        {
-                            "doc_id": document_id,
-                            "idx": idx,
-                            "content": chunk,
-                            "embedding": str(embedding_list)
-                        }
-                    )
-                
-                # Update document status
                 await conn.execute(
                     text("""
                     UPDATE documents 

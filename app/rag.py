@@ -1,67 +1,17 @@
-"""RAG retrieval and generation."""
+"""RAG retrieval and generation using LangChain."""
 import asyncio
-import json
-from pathlib import Path
 from typing import List, Optional, Tuple
-import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-from sqlalchemy import text
+
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_classic.chains import RetrievalQA
 
 from app.config import settings
-from app.db import get_db_connection
-from app.ingest import embed_texts, get_embedding_model
+from app.langchain_utils import get_llm, get_retriever, similarity_search_with_score
 from app.schemas import ChunkResult
 
 
-# Global LLM model and tokenizer
-_llm_model: Optional[AutoModelForCausalLM] = None
-_llm_tokenizer: Optional[AutoTokenizer] = None
 _generation_semaphore: Optional[asyncio.Semaphore] = None
-
-
-def resolve_llm_model_path(model_path: str) -> str:
-    """Resolve a valid local model directory that has config.json with model_type."""
-    base = Path(model_path)
-    config_path = base / "config.json"
-
-    def _has_model_type(cfg: Path) -> bool:
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return isinstance(data, dict) and "model_type" in data
-        except Exception:
-            return False
-
-    if config_path.exists() and _has_model_type(config_path):
-        return str(base)
-
-    if base.exists():
-        for cfg in base.rglob("config.json"):
-            if _has_model_type(cfg):
-                return str(cfg.parent)
-
-    return str(base)
-
-
-def get_llm_model() -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
-    """Get or load the LLM model and tokenizer."""
-    global _llm_model, _llm_tokenizer
-    
-    if _llm_model is None or _llm_tokenizer is None:
-        model_path = resolve_llm_model_path(settings.LLM_MODEL_PATH)
-        _llm_tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            trust_remote_code=True
-        )
-        _llm_model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float32,
-            trust_remote_code=True
-        )
-        _llm_model.eval()
-    
-    return _llm_model, _llm_tokenizer
 
 
 def get_generation_semaphore() -> asyncio.Semaphore:
@@ -77,138 +27,90 @@ async def retrieve_chunks(
     top_k: int = 5,
     document_id: Optional[int] = None
 ) -> List[ChunkResult]:
-    """Retrieve relevant chunks using vector similarity search."""
-    # Generate query embedding
-    query_embeddings = await embed_texts([query])
-    query_embedding = query_embeddings[0].tolist()
-    
-    # Search in database
-    async with get_db_connection() as conn:
-        if document_id is not None:
-            # Filter by document_id
-            result = await conn.execute(
-                text("""
-                SELECT 
-                    c.id as chunk_id,
-                    c.document_id,
-                    d.filename,
-                    c.content,
-                    c.chunk_index,
-                    (c.embedding <=> CAST(:query_embedding AS vector)) as distance
-                FROM chunks c
-                JOIN documents d ON c.document_id = d.id
-                WHERE c.document_id = :doc_id
-                ORDER BY distance
-                LIMIT :limit
-                """),
-                {
-                    "query_embedding": str(query_embedding),
-                    "doc_id": document_id,
-                    "limit": top_k
-                }
-            )
-        else:
-            # Search across all documents
-            result = await conn.execute(
-                text("""
-                SELECT 
-                    c.id as chunk_id,
-                    c.document_id,
-                    d.filename,
-                    c.content,
-                    c.chunk_index,
-                    (c.embedding <=> CAST(:query_embedding AS vector)) as distance
-                FROM chunks c
-                JOIN documents d ON c.document_id = d.id
-                ORDER BY distance
-                LIMIT :limit
-                """),
-                {
-                    "query_embedding": str(query_embedding),
-                    "limit": top_k
-                }
-            )
-        
-        rows = result.fetchall()
-        
-        chunks = [
+    """Retrieve relevant chunks using LangChain PGVector similarity search."""
+    results = await similarity_search_with_score(query, top_k, document_id)
+
+    chunks: List[ChunkResult] = []
+    for idx, (doc, score) in enumerate(results):
+        metadata = doc.metadata or {}
+        chunks.append(
             ChunkResult(
-                chunk_id=row.chunk_id,
-                document_id=row.document_id,
-                filename=row.filename,
-                content=row.content,
-                distance=float(row.distance),
-                chunk_index=row.chunk_index
+                chunk_id=int(metadata.get("chunk_id", idx)),
+                document_id=int(metadata.get("document_id", -1)),
+                filename=str(metadata.get("filename", "")),
+                content=doc.page_content,
+                distance=float(score),
+                chunk_index=int(metadata.get("chunk_index", idx)),
             )
-            for row in rows
-        ]
-        
-        return chunks
+        )
+
+    return chunks
 
 
 async def generate_answer(query: str, chunks: List[ChunkResult]) -> str:
-    """Generate answer using LLM with retrieved chunks."""
+    """Generate answer using local LLM with retrieved chunks."""
     semaphore = get_generation_semaphore()
-    
+
     async with semaphore:
-        # Build prompt with citations
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             context_parts.append(
                 f"[{i}] From {chunk.filename} (chunk {chunk.chunk_index}):\n{chunk.content}\n"
             )
-        
         context = "\n".join(context_parts)
-        
-        prompt = f"""Based on the following context, answer the question. Include citations using [1], [2], etc.
+
+        prompt = PromptTemplate.from_template(
+            """
+You are a helpful assistant. Use only the provided context to answer.
+Include citations like [1], [2] after statements that use the context.
 
 Context:
 {context}
 
-Question: {query}
+Question: {question}
 
-Answer:"""
-        
-        # Generate response
-        model, tokenizer = get_llm_model()
-        
-        def _generate():
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=settings.LLM_MAX_INPUT_LENGTH)
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-            
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=settings.LLM_MAX_NEW_TOKENS,
-                    temperature=settings.LLM_TEMPERATURE,
-                    do_sample=True,
-                    top_p=settings.LLM_TOP_P,
-                    pad_token_id=tokenizer.eos_token_id
-                )
-            
-            response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract just the answer part (after "Answer:")
-            if "Answer:" in response:
-                answer = response.split("Answer:")[-1].strip()
-            else:
-                answer = response.strip()
-            
-            return answer
-        
-        answer = await asyncio.to_thread(_generate)
-        return answer
+Answer:
+""".strip()
+        )
+
+        llm = get_llm()
+        chain = prompt | llm | StrOutputParser()
+        answer = await asyncio.to_thread(chain.invoke, {"context": context, "question": query})
+        return answer.strip()
 
 
 async def chat(query: str, top_k: int = 5, document_id: Optional[int] = None) -> Tuple[str, List[ChunkResult]]:
     """Perform RAG: retrieve chunks and generate answer."""
-    # Retrieve relevant chunks
-    chunks = await retrieve_chunks(query, top_k, document_id)
-    
+    retriever = get_retriever(top_k, document_id)
+    llm = get_llm()
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        return_source_documents=True,
+    )
+
+    result = await asyncio.to_thread(qa_chain.invoke, {"query": query})
+    docs = result.get("source_documents", [])
+
+    # Build ChunkResult list from docs (score not available here)
+    chunks: List[ChunkResult] = []
+    for idx, doc in enumerate(docs):
+        metadata = doc.metadata or {}
+        chunks.append(
+            ChunkResult(
+                chunk_id=int(metadata.get("chunk_id", idx)),
+                document_id=int(metadata.get("document_id", -1)),
+                filename=str(metadata.get("filename", "")),
+                content=doc.page_content,
+                distance=0.0,
+                chunk_index=int(metadata.get("chunk_index", idx)),
+            )
+        )
+
     if not chunks:
         return "No relevant information found in the documents.", []
-    
-    # Generate answer
-    answer = await generate_answer(query, chunks)
-    
+
+    answer = result.get("result", "").strip()
     return answer, chunks

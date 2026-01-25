@@ -26,6 +26,20 @@ A production-ready Async RAG (Retrieval-Augmented Generation) service built with
                             └─────▶ LLM (Qwen2.5-0.5B-Instruct)
 ```
 
+## Request Flow (Chat) and Prompt Template
+
+Below is the actual call chain and prompt template (from [app/rag.py](app/rag.py)):
+
+**Call chain (execution order)**
+
+1. `POST /chat` → `chat_endpoint()` in [app/main.py](app/main.py)
+2. Call `chat()` in [app/rag.py](app/rag.py)
+3. `get_retriever()` in [app/langchain_utils.py](app/langchain_utils.py)
+4. Optionally enable `SelfQueryRetriever` when `USE_SELF_QUERY=true`
+5. Optionally enable `Reranker` when `ENABLE_RERANKER=true`
+6. `RetrievalQA` triggers retrieval + generation
+7. Return `answer` + `sources`
+
 ## Prerequisites
 
 - Python 3.10+
@@ -141,11 +155,39 @@ TRANSFORMERS_OFFLINE=1
 
 If you still cannot download from the server, do the download on a machine with internet access, then copy `models/bge-small-zh-v1.5/` to the server.
 
+### 4.2 Download the Reranker Model (Optional, CPU-friendly)
+
+For reranking, this setup uses a small cross-encoder that runs well on CPU.
+
+```bash
+mkdir -p models/cross-encoder
+modelscope download --model cross-encoder/ms-marco-MiniLM-L12-v2 --local_dir models/cross-encoder/ms-marco-MiniLM-L12-v2
+```
+
 ### 5. Configure Environment Variables
 
 ```bash
 cp .env.example .env
 # Edit .env if needed (defaults should work for local development)
+```
+
+#### LangChain + PGVector (Offline)
+
+- The service now uses LangChain's PGVector store. It requires a **sync** PostgreSQL URL for LangChain:
+
+```bash
+DATABASE_URL_SYNC=postgresql+psycopg2://postgres:postgres@localhost:5432/ragdb
+VECTOR_COLLECTION=rag_documents
+USE_SELF_QUERY=false
+ENABLE_RERANKER=true
+RERANKER_MODEL_PATH=./models/cross-encoder/ms-marco-MiniLM-L12-v2
+```
+
+- Keep models fully local (ModelScope download) and enable offline mode if needed:
+
+```bash
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
 ```
 
 ### 6. Run the Service

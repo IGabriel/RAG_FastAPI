@@ -101,30 +101,7 @@ async def initialize_database(embedding_model: str, dimension: int):
             )
         """))
         
-        # Create chunks table with dynamic vector dimension
-        await conn.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS chunks (
-                id SERIAL PRIMARY KEY,
-                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                embedding vector({dimension}),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
-        
-        # Create index for vector similarity search
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS chunks_embedding_idx 
-            ON chunks USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
-        """))
-        
-        # Create index for document_id lookup
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS chunks_document_id_idx 
-            ON chunks(document_id)
-        """))
+        # Note: vector storage now uses LangChain PGVector tables
     
     # Cache the embedding dimension
     await set_embedding_dimension(dimension)
@@ -136,3 +113,66 @@ async def close_database():
     if _engine:
         await _engine.dispose()
         _engine = None
+
+
+async def get_langchain_chunk_counts(collection_name: str) -> dict[int, int]:
+    """Return a mapping of document_id to chunk count from LangChain PGVector tables."""
+    async with get_db_connection() as conn:
+        result = await conn.execute(
+            text("""
+            SELECT
+                (e.cmetadata->>'document_id')::int AS document_id,
+                COUNT(*) AS chunk_count
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection
+              AND e.cmetadata ? 'document_id'
+            GROUP BY (e.cmetadata->>'document_id')::int
+            """),
+            {"collection": collection_name}
+        )
+        rows = result.fetchall()
+
+    return {row.document_id: row.chunk_count for row in rows}
+
+
+async def get_langchain_chunk_count(document_id: int, collection_name: str) -> int:
+    """Return chunk count for a single document_id."""
+    async with get_db_connection() as conn:
+        result = await conn.execute(
+            text("""
+            SELECT COUNT(*) AS chunk_count
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection
+              AND e.cmetadata->>'document_id' = :doc_id
+            """),
+            {"collection": collection_name, "doc_id": str(document_id)}
+        )
+        row = result.fetchone()
+        return int(row.chunk_count) if row else 0
+
+
+async def delete_langchain_embeddings(document_id: int, collection_name: str):
+    """Delete embeddings for a document_id from LangChain PGVector tables."""
+    async with get_db_connection() as conn:
+        # Resolve collection id
+        result = await conn.execute(
+            text("""
+            SELECT uuid FROM langchain_pg_collection WHERE name = :collection
+            """),
+            {"collection": collection_name}
+        )
+        row = result.fetchone()
+        if not row:
+            return
+
+        collection_id = row.uuid
+        await conn.execute(
+            text("""
+            DELETE FROM langchain_pg_embedding
+            WHERE collection_id = :collection_id
+              AND cmetadata->>'document_id' = :doc_id
+            """),
+            {"collection_id": collection_id, "doc_id": str(document_id)}
+        )

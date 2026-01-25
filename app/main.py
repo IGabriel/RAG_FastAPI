@@ -8,7 +8,14 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import settings
-from app.db import initialize_database, close_database, get_db_connection
+from app.db import (
+    initialize_database,
+    close_database,
+    get_db_connection,
+    get_langchain_chunk_counts,
+    get_langchain_chunk_count,
+    delete_langchain_embeddings,
+)
 from app.ingest import probe_embedding_dimension, enqueue_indexing
 from app.rag import retrieve_chunks, chat
 from app.schemas import (
@@ -108,6 +115,8 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
                 {"filename": file.filename, "filepath": ""}
             )
             row = result.fetchone()
+            if not row:
+                raise HTTPException(status_code=500, detail="Failed to create document record")
             document_id = row[0]
         
         # Save file to disk
@@ -156,46 +165,46 @@ async def list_documents(
     async with get_db_connection() as conn:
         # Get total count
         result = await conn.execute(text("SELECT COUNT(*) FROM documents"))
-        total = result.fetchone()[0]
+        row = result.fetchone()
+        total = row[0] if row else 0
         
-        # Get documents with chunk counts
+        # Get documents
         result = await conn.execute(
             text("""
             SELECT 
                 d.id,
                 d.filename,
                 d.status,
-                COUNT(c.id) as chunk_count,
                 d.created_at,
                 d.updated_at
             FROM documents d
-            LEFT JOIN chunks c ON d.id = c.document_id
-            GROUP BY d.id
             ORDER BY d.created_at DESC
             LIMIT :limit OFFSET :offset
             """),
             {"limit": per_page, "offset": offset}
         )
         rows = result.fetchall()
-        
-        documents = [
-            DocumentInfo(
-                document_id=row.id,
-                filename=row.filename,
-                status=DocumentStatus(row.status),
-                chunk_count=row.chunk_count,
-                created_at=row.created_at,
-                updated_at=row.updated_at
-            )
-            for row in rows
-        ]
-        
-        return DocumentListResponse(
-            documents=documents,
-            total=total,
-            page=page,
-            per_page=per_page
+
+    chunk_counts = await get_langchain_chunk_counts(settings.VECTOR_COLLECTION)
+
+    documents = [
+        DocumentInfo(
+            document_id=row.id,
+            filename=row.filename,
+            status=DocumentStatus(row.status),
+            chunk_count=chunk_counts.get(row.id, 0),
+            created_at=row.created_at,
+            updated_at=row.updated_at
         )
+        for row in rows
+    ]
+
+    return DocumentListResponse(
+        documents=documents,
+        total=total,
+        page=page,
+        per_page=per_page
+    )
 
 
 @app.get("/documents/{doc_id}", response_model=DocumentInfo)
@@ -208,13 +217,10 @@ async def get_document(doc_id: int):
                 d.id,
                 d.filename,
                 d.status,
-                COUNT(c.id) as chunk_count,
                 d.created_at,
                 d.updated_at
             FROM documents d
-            LEFT JOIN chunks c ON d.id = c.document_id
             WHERE d.id = :doc_id
-            GROUP BY d.id
             """),
             {"doc_id": doc_id}
         )
@@ -223,11 +229,12 @@ async def get_document(doc_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
         
+        chunk_count = await get_langchain_chunk_count(row.id, settings.VECTOR_COLLECTION)
         return DocumentInfo(
             document_id=row.id,
             filename=row.filename,
             status=DocumentStatus(row.status),
-            chunk_count=row.chunk_count,
+            chunk_count=chunk_count,
             created_at=row.created_at,
             updated_at=row.updated_at
         )
@@ -250,11 +257,14 @@ async def delete_document(doc_id: int):
         file_path = Path(row[0])
         doc_dir = file_path.parent
         
-        # Delete from database (cascades to chunks)
+        # Delete from database
         await conn.execute(
             text("DELETE FROM documents WHERE id = :doc_id"),
             {"doc_id": doc_id}
         )
+
+    # Delete embeddings from LangChain PGVector
+    await delete_langchain_embeddings(doc_id, settings.VECTOR_COLLECTION)
     
     # Delete from disk
     if doc_dir.exists():

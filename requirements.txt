@@ -13,12 +13,18 @@ sentence-transformers
 transformers
 torch
 numpy
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+pgvector
+lark
 
 # PDF processing
 pypdf
 
 # DOCX processing
-python-docx
+docx2txt
 
 # HTTP client for OCR
 aiohttp
