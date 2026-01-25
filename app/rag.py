@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain.chains import RetrievalQA
+from langchain_classic.chains import RetrievalQA
 
 from app.config import settings
 from app.langchain_utils import get_llm, get_retriever, similarity_search_with_score

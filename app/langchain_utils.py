@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional, List
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -10,7 +11,8 @@ from langchain_community.vectorstores import PGVector
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from langchain.chains.query_constructor.schema import AttributeInfo
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.chains.query_constructor.schema import AttributeInfo
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import torch
 
@@ -22,10 +24,27 @@ _vectorstore: Optional[PGVector] = None
 _llm: Optional[HuggingFacePipeline] = None
 _reranker: Optional[HuggingFaceCrossEncoder] = None
 
-try:  # Optional, depends on langchain version
-    from langchain.retrievers.self_query.base import SelfQueryRetriever as _SelfQueryRetriever
-except Exception:  # pragma: no cover - optional dependency
-    _SelfQueryRetriever = None
+
+def _resolve_local_model_path(model_path: str) -> str:
+    """Resolve a local model path relative to project root and models folder."""
+    if not model_path:
+        return model_path
+
+    candidate = Path(model_path)
+    if candidate.exists():
+        return str(candidate)
+
+    project_root = Path(__file__).resolve().parents[1]
+    candidate = project_root / model_path
+    if candidate.exists():
+        return str(candidate)
+
+    trimmed = model_path.lstrip("./")
+    candidate = project_root / "models" / trimmed
+    if candidate.exists():
+        return str(candidate)
+
+    return model_path
 
 class _CrossEncoderRerankRetriever(BaseRetriever):
     """Retriever wrapper that reranks results with a cross-encoder."""
@@ -119,7 +138,8 @@ def get_reranker() -> Optional[HuggingFaceCrossEncoder]:
         model_path = settings.RERANKER_MODEL_PATH or ""
         if not model_path:
             return None
-        _reranker = HuggingFaceCrossEncoder(model_name=model_path)
+        resolved_path = _resolve_local_model_path(model_path)
+        _reranker = HuggingFaceCrossEncoder(model_name=resolved_path)
     return _reranker
 
 
@@ -153,8 +173,7 @@ def get_retriever(top_k: int, document_id: Optional[int] = None):
     retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
 
     if settings.USE_SELF_QUERY:
-        if settings.USE_SELF_QUERY and _SelfQueryRetriever is not None:
-            retriever = _SelfQueryRetriever.from_llm(
+        retriever = SelfQueryRetriever.from_llm(
             llm=get_llm(),
             vectorstore=vectorstore,
             document_contents="Document chunk",
