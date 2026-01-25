@@ -44,19 +44,22 @@ def _resolve_local_model_path(model_path: str) -> str:
     if candidate.exists():
         return str(candidate)
 
+    # Handle nested Qwen folder layout: models/<name>/Qwen/<name>
+    candidate = project_root / "models" / trimmed / "Qwen" / Path(trimmed).name
+    if candidate.exists():
+        return str(candidate)
+
     return model_path
 
 class _CrossEncoderRerankRetriever(BaseRetriever):
     """Retriever wrapper that reranks results with a cross-encoder."""
 
-    def __init__(self, base_retriever: BaseRetriever, cross_encoder: HuggingFaceCrossEncoder, top_k: int):
-        super().__init__()
-        self.base_retriever = base_retriever
-        self.cross_encoder = cross_encoder
-        self.top_k = top_k
+    base_retriever: BaseRetriever
+    cross_encoder: HuggingFaceCrossEncoder
+    top_k: int
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
-        docs = self.base_retriever.get_relevant_documents(query)
+        docs = self.base_retriever.invoke(query)
         if not docs:
             return docs
 
@@ -103,13 +106,14 @@ def get_llm() -> HuggingFacePipeline:
     """Get or create the local LLM pipeline."""
     global _llm
     if _llm is None:
+        model_path = _resolve_local_model_path(settings.LLM_MODEL_PATH)
         tokenizer = AutoTokenizer.from_pretrained(
-            settings.LLM_MODEL_PATH,
+            model_path,
             trust_remote_code=True,
             local_files_only=True,
         )
         model = AutoModelForCausalLM.from_pretrained(
-            settings.LLM_MODEL_PATH,
+            model_path,
             trust_remote_code=True,
             torch_dtype=torch.float32,
             local_files_only=True,
@@ -183,7 +187,11 @@ def get_retriever(top_k: int, document_id: Optional[int] = None):
 
     reranker = get_reranker()
     if reranker is not None:
-        retriever = _CrossEncoderRerankRetriever(retriever, reranker, top_k)
+        retriever = _CrossEncoderRerankRetriever(
+            base_retriever=retriever,
+            cross_encoder=reranker,
+            top_k=top_k,
+        )
 
     return retriever
 
