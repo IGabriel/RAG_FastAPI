@@ -110,7 +110,19 @@ async def chat(query: str, top_k: int = 5, document_id: Optional[int] = None) ->
         )
 
     if not chunks:
-        return "No relevant information found in the documents.", []
+        prompt = PromptTemplate.from_template(
+            """
+You are a helpful assistant. Answer the user's question directly.
+
+Question: {question}
+
+Answer:
+""".strip()
+        )
+        llm = get_llm()
+        chain = prompt | llm | StrOutputParser()
+        answer = await asyncio.to_thread(chain.invoke, {"question": query})
+        return answer.strip(), []
 
     answer = result.get("result", "").strip()
     return answer, chunks
