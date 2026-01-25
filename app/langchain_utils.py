@@ -9,9 +9,11 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFacePipeline
 from langchain_community.vectorstores import PGVector
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_classic.chains.query_constructor.schema import AttributeInfo
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import torch
@@ -51,24 +53,6 @@ def _resolve_local_model_path(model_path: str) -> str:
 
     return model_path
 
-class _CrossEncoderRerankRetriever(BaseRetriever):
-    """Retriever wrapper that reranks results with a cross-encoder."""
-
-    base_retriever: BaseRetriever
-    cross_encoder: HuggingFaceCrossEncoder
-    top_k: int
-
-    def _get_relevant_documents(self, query: str) -> List[Document]:
-        docs = self.base_retriever.invoke(query)
-        if not docs:
-            return docs
-
-        pairs = [(query, doc.page_content) for doc in docs]
-        scores = self.cross_encoder.score(pairs)
-        ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
-        return [doc for doc, _ in ranked[: self.top_k]]
-
-
 def _get_sync_database_url() -> str:
     """Return a psycopg2-compatible connection string for LangChain PGVector."""
     if settings.DATABASE_URL_SYNC:
@@ -76,6 +60,19 @@ def _get_sync_database_url() -> str:
     if "+asyncpg" in settings.DATABASE_URL:
         return settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
     return settings.DATABASE_URL
+
+
+class _SelfQueryFallbackRetriever(BaseRetriever):
+    """Fallback to a base retriever when self-query parsing fails."""
+
+    self_query_retriever: BaseRetriever
+    base_retriever: BaseRetriever
+
+    def _get_relevant_documents(self, query: str) -> List[Document]:
+        try:
+            return self.self_query_retriever.invoke(query)
+        except Exception:
+            return self.base_retriever.invoke(query)
 
 
 def get_embeddings() -> HuggingFaceEmbeddings:
@@ -174,7 +171,8 @@ def get_retriever(top_k: int, document_id: Optional[int] = None):
     if document_id is not None:
         search_kwargs["filter"] = {"document_id": document_id}
 
-    retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
+    base_retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
+    retriever = base_retriever
 
     if settings.USE_SELF_QUERY:
         retriever = SelfQueryRetriever.from_llm(
@@ -184,13 +182,17 @@ def get_retriever(top_k: int, document_id: Optional[int] = None):
             metadata_field_info=_get_metadata_field_info(),
             search_kwargs=search_kwargs,
         )
+        retriever = _SelfQueryFallbackRetriever(
+            self_query_retriever=retriever,
+            base_retriever=base_retriever,
+        )
 
     reranker = get_reranker()
     if reranker is not None:
-        retriever = _CrossEncoderRerankRetriever(
+        compressor = CrossEncoderReranker(model=reranker, top_n=top_k)
+        retriever = ContextualCompressionRetriever(
             base_retriever=retriever,
-            cross_encoder=reranker,
-            top_k=top_k,
+            base_compressor=compressor,
         )
 
     return retriever
